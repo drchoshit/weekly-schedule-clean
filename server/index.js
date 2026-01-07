@@ -1,61 +1,75 @@
 import express from "express";
 import cors from "cors";
-import fs from "fs";
 import path from "path";
+import fs from "fs";
 
 const app = express();
+const PORT = process.env.PORT || 10000;
+
+// ===== 기본 미들웨어 =====
 app.use(cors());
 app.use(express.json());
 
-const DATA_DIR = path.resolve("data");
+// ===== API =====
+const dataDir = path.resolve("public");
+const studentsPath = path.join(dataDir, "students.json");
+const attendancePath = path.join(dataDir, "attendance.json");
+const mentalCarePath = path.join(dataDir, "mental_care_settings.json");
 
-const readJSON = (name, fallback) => {
-  const file = path.join(DATA_DIR, name);
-  if (!fs.existsSync(file)) {
-    fs.writeFileSync(file, JSON.stringify(fallback, null, 2));
-    return fallback;
+const readJSON = (p, def) => {
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf-8"));
+  } catch {
+    return def;
   }
-  return JSON.parse(fs.readFileSync(file, "utf-8"));
 };
 
-const writeJSON = (name, data) => {
-  const file = path.join(DATA_DIR, name);
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+const writeJSON = (p, data) => {
+  fs.writeFileSync(p, JSON.stringify(data, null, 2));
 };
 
-/* ===== STUDENTS ===== */
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
 app.get("/api/students", (req, res) => {
-  res.json(readJSON("students.json", []));
+  res.json(readJSON(studentsPath, []));
 });
 
 app.post("/api/students", (req, res) => {
-  writeJSON("students.json", req.body);
+  writeJSON(studentsPath, req.body || []);
   res.json({ ok: true });
 });
 
-/* ===== ATTENDANCE ===== */
 app.get("/api/attendance", (req, res) => {
-  res.json(readJSON("attendance.json", {}));
+  res.json(readJSON(attendancePath, {}));
 });
 
 app.post("/api/attendance", (req, res) => {
-  writeJSON("attendance.json", req.body);
+  writeJSON(attendancePath, req.body || {});
   res.json({ ok: true });
 });
 
-/* ===== MENTAL CARE ===== */
 app.get("/api/mental-care", (req, res) => {
-  res.json(readJSON("mental_care_settings.json", {}));
+  res.json(readJSON(mentalCarePath, {}));
 });
 
 app.post("/api/mental-care", (req, res) => {
-  writeJSON("mental_care_settings.json", req.body);
+  writeJSON(mentalCarePath, req.body || {});
   res.json({ ok: true });
 });
 
-app.get("/api/health", (_, res) => res.json({ status: "ok" }));
+// ===== 프론트 정적 파일 서빙 =====
+const distPath = path.resolve("dist");
 
-const PORT = process.env.PORT || 5000;
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+}
+
 app.listen(PORT, () => {
-  console.log(`API server running on ${PORT}`);
+  console.log(`API + Frontend server running on ${PORT}`);
 });
