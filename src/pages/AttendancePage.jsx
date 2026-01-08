@@ -257,10 +257,8 @@ export default function AttendancePage() {
             if (ranges.length > 0) {
               ranges.sort((a, b) => b.adjustedEndMinutes - a.adjustedEndMinutes);
               const { start, end } = ranges[0];
-              // ✅ 정규화해서 저장
               updatedAttendance[id][day] = normalizeTimeValue([start, end]);
             } else {
-              // ✅ 빈 값도 정규화
               updatedAttendance[id][day] = normalizeTimeValue("");
             }
           } else {
@@ -269,7 +267,6 @@ export default function AttendancePage() {
         }
       }
 
-      // ⚠ 엑셀에 없는 기존 학생 이름들 찾기
       const missingStudents = existingStudents
         .filter(s => !importedNames.has(s.name))
         .map(s => s.name);
@@ -278,16 +275,13 @@ export default function AttendancePage() {
         alert(`⚠️ 엑셀에 없는 학생:\n${missingStudents.join(", ")}`);
       }
 
-      // ✅ 엑셀에만 있는 학생 목록 저장 (삭제용)
       const excelOnlyNames = Array.from(importedNames).filter(
         name => !existingStudents.find(s => s.name === name)
       );
       setExcelOnlyStudentNames(excelOnlyNames);
 
-      // ✅ 학생 목록 병합
       setStudents([...existingStudents, ...newStudents]);
 
-      // ✅ 출결 병합 + 최종 정규화(모든 요일을 배열 형태로 맞춤)
       const merged = { ...attendance, ...updatedAttendance };
       Object.keys(merged).forEach(sid => {
         days.forEach(d => {
@@ -297,7 +291,6 @@ export default function AttendancePage() {
 
       setAttendance(merged);
 
-      // ✅ 같은 파일 다시 업로드 가능하도록 리셋
       if (e.target && "value" in e.target) {
         e.target.value = "";
       }
@@ -331,7 +324,6 @@ export default function AttendancePage() {
         />
         <button onClick={handleDownloadExcel} className="bg-green-600 text-white px-4 py-2 rounded">엑셀 다운로드</button>
 
-        {/* ✅ 추가: 선택 모드 토글 + 선택 삭제 */}
         <button onClick={toggleSelectionMode} className="bg-orange-500 text-white px-4 py-2 rounded">
           {selectionMode ? "선택 모드 해제" : "선택 모드"}
         </button>
@@ -347,7 +339,6 @@ export default function AttendancePage() {
       <table className="w-full mt-4 text-center border-collapse border">
         <thead>
           <tr className="bg-gray-100">
-            {/* ✅ 선택 모드일 때만 체크박스 헤더 */}
             {selectionMode && (
               <th className="border px-2">
                 <input
@@ -368,7 +359,6 @@ export default function AttendancePage() {
         <tbody>
           {filteredStudents.map(student => (
             <tr key={student.id}>
-              {/* ✅ 선택 모드일 때 체크박스 셀 */}
               {selectionMode && (
                 <td className="border px-2">
                   <input
