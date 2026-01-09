@@ -1,13 +1,15 @@
-import React, { useState } from "react"; 
+import React, { useState, useEffect } from "react";
 import { useSchedule } from "../context/ScheduleContext";
 import { timeToMinutes } from "../utils/scheduler";
 import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
+import api from "../api/api";
 
 const days = ["월", "화", "수", "목", "금", "토"];
 
 export default function AttendancePage() {
-  const { students, setStudents, attendance, setAttendance, startDate, endDate } = useSchedule();
+  const { students, setStudents, attendance, setAttendance, startDate, endDate } =
+    useSchedule();
 
   const [search, setSearch] = useState("");
   const [searchValue, setSearchValue] = useState("");
@@ -17,27 +19,10 @@ export default function AttendancePage() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
 
-  // ✅ 추가: 컨트롤드 인풋 핸들러 (기존 코드에서 참조하던 함수 정의)
-  const updateName = (id, value) => {
-    setStudents(prev => prev.map(s => (s.id === id ? { ...s, name: value } : s)));
-  };
-  const updateSeatNumber = (id, value) => {
-    setStudents(prev => prev.map(s => (s.id === id ? { ...s, seatNumber: value } : s)));
-  };
-  const updateTime = (id, day, index, value) => {
-    setAttendance(prev => {
-      const next = { ...prev };
-      const per = Array.isArray(next[id]?.[day]) ? [...next[id][day]] : ["", ""];
-      per[index] = value;
-      next[id] = { ...(next[id] || {}), [day]: per };
-      return next;
-    });
-  };
-
   // ✅ 추가: 시간 값 정규화 유틸 (엑셀 업로드 후 입력 잠김 방지)
   const normalizeTimeValue = (value) => {
     if (Array.isArray(value)) {
-      const a = value.map(v => (typeof v === "string" ? v.trim() : ""));
+      const a = value.map((v) => (typeof v === "string" ? v.trim() : ""));
       if (!a[0] && !a[1]) return [];
       return [a[0] || "", a[1] || ""];
     }
@@ -45,7 +30,7 @@ export default function AttendancePage() {
       const s = value.trim();
       if (!s) return [];
       if (s.includes("~")) {
-        const [st, en] = s.split("~").map(x => x.trim());
+        const [st, en] = s.split("~").map((x) => x.trim());
         if (!st && !en) return [];
         return [st || "", en || ""];
       }
@@ -54,22 +39,191 @@ export default function AttendancePage() {
     return [];
   };
 
-  const addStudent = () => {
-    const newStudent = { id: Date.now(), name: "", seatNumber: "" };
-    setStudents(prev => [...prev, newStudent]);
-    setAttendance(prev => ({
-      ...prev,
-      [newStudent.id]: {}
-    }));
+  // ============================
+  // ✅ 서버 연동: 초기 로드
+  // - 학생: /students
+  // - 출결: /attendance (name 기반)
+  // ============================
+  useEffect(() => {
+    const loadFromServer = async () => {
+      try {
+        const [sRes, aRes] = await Promise.all([
+          api.get("/students"),
+          api.get("/attendance"),
+        ]);
+
+        const serverStudents = Array.isArray(sRes.data) ? sRes.data : [];
+        const serverAttendance = aRes?.data && typeof aRes.data === "object" ? aRes.data : {};
+
+        // 학생 id를 name으로 통일 (새로고침/연동 근본 해결)
+        const normalizedStudents = serverStudents
+          .filter((s) => s && s.name)
+          .map((s) => ({
+            id: s.name,
+            name: s.name,
+            seatNumber: s.seat || "",
+          }));
+
+        // 출결도 name(id) 기준으로 정규화
+        const normalizedAttendance = {};
+        for (const st of normalizedStudents) {
+          const raw = serverAttendance?.[st.name] || {};
+          normalizedAttendance[st.id] = normalizedAttendance[st.id] || {};
+          for (const d of days) {
+            normalizedAttendance[st.id][d] = normalizeTimeValue(raw?.[d] || "");
+          }
+        }
+
+        setStudents(normalizedStudents);
+        setAttendance(normalizedAttendance);
+      } catch (e) {
+        console.error("서버 초기 로드 실패", e);
+      }
+    };
+
+    // 이미 로컬에 학생이 있으면 굳이 덮어쓰지 않음 (기존 사용 흐름 보존)
+    if (!students || students.length === 0) {
+      loadFromServer();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ============================
+  // ✅ 서버 연동: 학생 upsert
+  // ============================
+  const upsertStudentToServer = async (name, seatNumber) => {
+    if (!name) return;
+    try {
+      await api.post("/students", {
+        name,
+        seat: seatNumber || "",
+        first_attendance_date: startDate || "",
+      });
+    } catch (e) {
+      console.error("학생 저장 실패", e);
+    }
   };
 
-  const deleteStudent = id => {
-    setStudents(prev => prev.filter(s => s.id !== id));
-    setAttendance(prev => {
+  // ============================
+  // ✅ 서버 연동: 출결 upsert
+  // ============================
+  const upsertAttendanceToServer = async (name, attObj) => {
+    if (!name) return;
+    try {
+      // 서버는 name을 key로 저장
+      await api.post("/attendance", {
+        name,
+        data: attObj || {},
+      });
+    } catch (e) {
+      console.error("출결 저장 실패", e);
+    }
+  };
+
+  // ✅ 추가: 컨트롤드 인풋 핸들러 (기존 코드에서 참조하던 함수 정의)
+  const updateName = (id, value) => {
+    const newName = (value || "").trim();
+
+    // 빈 이름은 허용 (입력 중)
+    setStudents((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, name: value, id: newName || s.id } : s))
+    );
+
+    // id=name 통일이므로 이름 변경 시 attendance 키 이동이 필요
+    if (!newName) return;
+
+    setAttendance((prev) => {
+      const next = { ...prev };
+      const oldKey = id;
+      const newKey = newName;
+
+      if (oldKey !== newKey) {
+        // 기존 출결 옮기기
+        const oldAtt = next[oldKey] || {};
+        if (!next[newKey]) next[newKey] = {};
+        for (const d of days) {
+          if (oldAtt[d]) next[newKey][d] = normalizeTimeValue(oldAtt[d]);
+        }
+        delete next[oldKey];
+      }
+      return next;
+    });
+
+    // 선택 모드에서 체크된 id도 이동
+    setSelectedIds((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) {
+        n.delete(id);
+        n.add(newName);
+      }
+      return n;
+    });
+
+    // 서버 반영 (학생/출결 둘 다)
+    const current = students.find((s) => s.id === id);
+    const seat = current?.seatNumber || "";
+    upsertStudentToServer(newName, seat);
+
+    // 출결은 state 업데이트가 비동기라, 현재 attendance에서 oldKey 기준으로 읽어올 수도 있음
+    const currentAtt = attendance?.[id] || attendance?.[newName] || {};
+    upsertAttendanceToServer(newName, currentAtt);
+  };
+
+  const updateSeatNumber = (id, value) => {
+    setStudents((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, seatNumber: value } : s))
+    );
+
+    const st = students.find((s) => s.id === id);
+    const name = st?.name || id;
+    if (!name) return;
+    upsertStudentToServer(name, value);
+  };
+
+  const updateTime = (id, day, index, value) => {
+    setAttendance((prev) => {
+      const next = { ...prev };
+      const per = Array.isArray(next[id]?.[day]) ? [...next[id][day]] : ["", ""];
+      per[index] = value;
+      next[id] = { ...(next[id] || {}), [day]: per };
+      return next;
+    });
+
+    // 서버 반영 (즉시)
+    const name = id;
+    const cur = attendance?.[id] || {};
+    const nextDayArr = Array.isArray(cur?.[day]) ? [...cur[day]] : ["", ""];
+    nextDayArr[index] = value;
+
+    const nextData = { ...cur, [day]: normalizeTimeValue(nextDayArr) };
+    upsertAttendanceToServer(name, nextData);
+  };
+
+  const addStudent = () => {
+    // id=name 통일: 유니크 임시 이름 생성 (사용자가 나중에 수정)
+    const tempName = `새학생${Date.now()}`;
+    const newStudent = { id: tempName, name: tempName, seatNumber: "" };
+
+    setStudents((prev) => [...prev, newStudent]);
+    setAttendance((prev) => ({
+      ...prev,
+      [newStudent.id]: {},
+    }));
+
+    // 서버에도 즉시 저장
+    upsertStudentToServer(newStudent.name, newStudent.seatNumber);
+    upsertAttendanceToServer(newStudent.name, {});
+  };
+
+  const deleteStudent = (id) => {
+    setStudents((prev) => prev.filter((s) => s.id !== id));
+    setAttendance((prev) => {
       const copy = { ...prev };
       delete copy[id];
       return copy;
     });
+
+    // 서버 삭제 API가 없으니 여기서는 로컬만 삭제 (원하면 서버 delete 엔드포인트 추가 가능)
   };
 
   const deleteAllStudents = () => {
@@ -81,11 +235,11 @@ export default function AttendancePage() {
 
   // ✅ 추가: 선택 모드/체크/일괄 삭제
   const toggleSelectionMode = () => {
-    setSelectionMode(v => !v);
+    setSelectionMode((v) => !v);
     setSelectedIds(new Set());
   };
   const toggleSelectRow = (id) => {
-    setSelectedIds(prev => {
+    setSelectedIds((prev) => {
       const n = new Set(prev);
       if (n.has(id)) n.delete(id);
       else n.add(id);
@@ -98,7 +252,7 @@ export default function AttendancePage() {
       setSelectedIds(new Set());
       return;
     }
-    setSelectedIds(new Set(list.map(s => s.id)));
+    setSelectedIds(new Set(list.map((s) => s.id)));
   };
   const deleteSelectedRows = () => {
     if (selectedIds.size === 0) {
@@ -107,8 +261,8 @@ export default function AttendancePage() {
     }
     if (!window.confirm(`${selectedIds.size}명을 삭제할까요?`)) return;
 
-    setStudents(prev => prev.filter(s => !selectedIds.has(s.id)));
-    setAttendance(prev => {
+    setStudents((prev) => prev.filter((s) => !selectedIds.has(s.id)));
+    setAttendance((prev) => {
       const next = { ...prev };
       for (const id of selectedIds) delete next[id];
       return next;
@@ -117,7 +271,7 @@ export default function AttendancePage() {
     setSelectionMode(false);
   };
 
-  const calculateWeeklyTotal = studentId => {
+  const calculateWeeklyTotal = (studentId) => {
     const att = attendance[studentId] || {};
     const totalMinutes = days.reduce((sum, d) => {
       const times = att[d];
@@ -137,20 +291,16 @@ export default function AttendancePage() {
 
   const formatAttendanceSummary = (att = {}) =>
     days
-      .map(d => {
+      .map((d) => {
         const times = att[d];
         return `${d}: ${
-          Array.isArray(times) && times[0] && times[1]
-            ? `${times[0]}~${times[1]}`
-            : "없음"
+          Array.isArray(times) && times[0] && times[1] ? `${times[0]}~${times[1]}` : "없음"
         }`;
       })
       .join(", ");
 
   const handleSortByName = () => {
-    const sorted = [...students].sort((a, b) =>
-      a.name.localeCompare(b.name, "ko-KR")
-    );
+    const sorted = [...students].sort((a, b) => a.name.localeCompare(b.name, "ko-KR"));
     setStudents(sorted);
   };
 
@@ -170,15 +320,12 @@ export default function AttendancePage() {
     setSearch(searchValue.trim());
   };
 
-  const filteredStudents = students.filter(s => s.name.includes(search));
+  const filteredStudents = students.filter((s) => s.name.includes(search));
 
   const handleDownloadExcel = () => {
     const wb = XLSX.utils.book_new();
     const header = ["이름", "좌석번호", "전화번호", ...days, "총 체류(분)"];
-    const wsData = [
-      [`주간 일정: ${startDate || ""} ~ ${endDate || ""}`],
-      header,
-    ];
+    const wsData = [[`주간 일정: ${startDate || ""} ~ ${endDate || ""}`], header];
 
     students.forEach((s) => {
       const row = [s.name, s.seatNumber || "", ""];
@@ -217,7 +364,9 @@ export default function AttendancePage() {
 
       const existingStudents = [...students];
       const updatedAttendance = { ...attendance };
-      const nameToStudent = Object.fromEntries(existingStudents.map(s => [s.name, s]));
+
+      // id=name 통일이므로 nameToStudent는 id로도 안전
+      const nameToStudent = Object.fromEntries(existingStudents.map((s) => [s.name, s]));
       const importedNames = new Set();
       const dayIndex = { 월: 3, 화: 4, 수: 5, 목: 6, 금: 7, 토: 8 };
       const newStudents = [];
@@ -232,9 +381,16 @@ export default function AttendancePage() {
 
         let student = nameToStudent[name];
         if (!student) {
-          student = { id: Date.now() + i, name, seatNumber: seat };
+          // id=name 통일
+          student = { id: name, name, seatNumber: seat };
           newStudents.push(student);
           nameToStudent[name] = student;
+        } else {
+          // 기존 학생 좌석 업데이트
+          student = { ...student, seatNumber: seat };
+          // existingStudents 반영
+          const idx = existingStudents.findIndex((x) => x.id === student.id);
+          if (idx >= 0) existingStudents[idx] = student;
         }
 
         const id = student.id;
@@ -245,10 +401,10 @@ export default function AttendancePage() {
           if (typeof cell === "string") {
             const ranges = cell
               .split(",")
-              .map(s => s.trim())
-              .filter(s => s.includes("~"))
-              .map(s => {
-                const [start, end] = s.split("~").map(t => t.trim());
+              .map((s) => s.trim())
+              .filter((s) => s.includes("~"))
+              .map((s) => {
+                const [start, end] = s.split("~").map((t) => t.trim());
                 let endMinutes = timeToMinutes(end);
                 if (endMinutes < 120) endMinutes += 1440;
                 return { start, end, adjustedEndMinutes: endMinutes };
@@ -265,26 +421,33 @@ export default function AttendancePage() {
             updatedAttendance[id][day] = normalizeTimeValue("");
           }
         }
+
+        // 서버 반영(엑셀 업로드 시 바로 저장)
+        upsertStudentToServer(student.name, student.seatNumber);
+        upsertAttendanceToServer(student.name, updatedAttendance[id]);
       }
 
       const missingStudents = existingStudents
-        .filter(s => !importedNames.has(s.name))
-        .map(s => s.name);
+        .filter((s) => !importedNames.has(s.name))
+        .map((s) => s.name);
 
       if (missingStudents.length > 0) {
         alert(`⚠️ 엑셀에 없는 학생:\n${missingStudents.join(", ")}`);
       }
 
       const excelOnlyNames = Array.from(importedNames).filter(
-        name => !existingStudents.find(s => s.name === name)
+        (name) => !existingStudents.find((s) => s.name === name)
       );
       setExcelOnlyStudentNames(excelOnlyNames);
 
-      setStudents([...existingStudents, ...newStudents]);
+      // newStudents는 기존에 없던 애들만 들어있음
+      const mergedStudents = [...existingStudents, ...newStudents];
+
+      setStudents(mergedStudents);
 
       const merged = { ...attendance, ...updatedAttendance };
-      Object.keys(merged).forEach(sid => {
-        days.forEach(d => {
+      Object.keys(merged).forEach((sid) => {
+        days.forEach((d) => {
           merged[sid][d] = normalizeTimeValue(merged[sid][d]);
         });
       });
@@ -304,9 +467,15 @@ export default function AttendancePage() {
       <h1 className="text-2xl font-bold mb-2">학생 출결 입력</h1>
 
       <div className="flex items-center gap-4 mb-4">
-        <button onClick={addStudent} className="bg-green-500 text-white px-4 py-2 rounded">+ 학생 추가</button>
-        <button onClick={handleSortByName} className="bg-blue-500 text-white px-4 py-2 rounded">이름순 정렬</button>
-        <button onClick={handleSortBySeat} className="bg-purple-500 text-white px-4 py-2 rounded">좌석순 정렬</button>
+        <button onClick={addStudent} className="bg-green-500 text-white px-4 py-2 rounded">
+          + 학생 추가
+        </button>
+        <button onClick={handleSortByName} className="bg-blue-500 text-white px-4 py-2 rounded">
+          이름순 정렬
+        </button>
+        <button onClick={handleSortBySeat} className="bg-purple-500 text-white px-4 py-2 rounded">
+          좌석순 정렬
+        </button>
         <input
           type="text"
           placeholder="이름 검색"
@@ -314,7 +483,9 @@ export default function AttendancePage() {
           onChange={(e) => setSearchValue(e.target.value)}
           className="border px-2 py-1"
         />
-        <button onClick={handleSearch} className="bg-gray-500 text-white px-4 py-2 rounded">검색</button>
+        <button onClick={handleSearch} className="bg-gray-500 text-white px-4 py-2 rounded">
+          검색
+        </button>
 
         <input
           type="file"
@@ -322,7 +493,9 @@ export default function AttendancePage() {
           onChange={handleUploadExcel}
           className="border px-2 py-1"
         />
-        <button onClick={handleDownloadExcel} className="bg-green-600 text-white px-4 py-2 rounded">엑셀 다운로드</button>
+        <button onClick={handleDownloadExcel} className="bg-green-600 text-white px-4 py-2 rounded">
+          엑셀 다운로드
+        </button>
 
         <button onClick={toggleSelectionMode} className="bg-orange-500 text-white px-4 py-2 rounded">
           {selectionMode ? "선택 모드 해제" : "선택 모드"}
@@ -341,23 +514,22 @@ export default function AttendancePage() {
           <tr className="bg-gray-100">
             {selectionMode && (
               <th className="border px-2">
-                <input
-                  type="checkbox"
-                  onChange={(e) => toggleSelectAll(e, filteredStudents)}
-                />
+                <input type="checkbox" onChange={(e) => toggleSelectAll(e, filteredStudents)} />
               </th>
             )}
             <th className="border px-2">이름</th>
             <th className="border px-2">좌석 번호</th>
-            {days.map(d => (
-              <th key={d} colSpan={2} className="border px-2">{d}</th>
+            {days.map((d) => (
+              <th key={d} colSpan={2} className="border px-2">
+                {d}
+              </th>
             ))}
             <th className="border px-2">총합</th>
             <th className="border px-2">삭제</th>
           </tr>
         </thead>
         <tbody>
-          {filteredStudents.map(student => (
+          {filteredStudents.map((student) => (
             <tr key={student.id}>
               {selectionMode && (
                 <td className="border px-2">
@@ -372,18 +544,18 @@ export default function AttendancePage() {
                 <input
                   className="border px-1 w-24"
                   value={student.name}
-                  onChange={e => updateName(student.id, e.target.value)}
+                  onChange={(e) => updateName(student.id, e.target.value)}
                 />
               </td>
               <td className="border px-2">
                 <input
                   className="border px-1 w-16 text-center"
                   value={student.seatNumber || ""}
-                  onChange={e => updateSeatNumber(student.id, e.target.value)}
+                  onChange={(e) => updateSeatNumber(student.id, e.target.value)}
                   placeholder="좌석"
                 />
               </td>
-              {days.map(day => {
+              {days.map((day) => {
                 const [start = "", end = ""] = attendance[student.id]?.[day] || [];
                 return (
                   <React.Fragment key={day}>
@@ -393,7 +565,7 @@ export default function AttendancePage() {
                         className="border px-1 w-16 text-center"
                         value={start}
                         placeholder="HH:MM"
-                        onChange={e => updateTime(student.id, day, 0, e.target.value)}
+                        onChange={(e) => updateTime(student.id, day, 0, e.target.value)}
                       />
                     </td>
                     <td className="border px-1">
@@ -402,7 +574,7 @@ export default function AttendancePage() {
                         className="border px-1 w-16 text-center"
                         value={end}
                         placeholder="HH:MM"
-                        onChange={e => updateTime(student.id, day, 1, e.target.value)}
+                        onChange={(e) => updateTime(student.id, day, 1, e.target.value)}
                       />
                     </td>
                   </React.Fragment>
@@ -425,7 +597,7 @@ export default function AttendancePage() {
       <div className="mt-6">
         <h2 className="text-lg font-semibold mb-2">학생 출결 요약</h2>
         <div className="space-y-1 text-sm">
-          {filteredStudents.map(s => (
+          {filteredStudents.map((s) => (
             <div key={s.id}>
               <strong>{s.name}</strong>: {formatAttendanceSummary(attendance[s.id])}
             </div>
