@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from "react";
 import api from "../api/api";
 
+// 날짜 차이 계산 (일 단위)
 function daysBetween(a, b) {
   const d1 = new Date(a);
   const d2 = new Date(b);
+  if (isNaN(d1) || isNaN(d2)) return 0;
   return Math.floor((d2 - d1) / (1000 * 60 * 60 * 24));
 }
 
@@ -12,47 +14,80 @@ export default function PrincipalConsultingPage() {
   const [mentors, setMentors] = useState({});
   const [consultings, setConsultings] = useState({});
   const [newDate, setNewDate] = useState({});
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     loadAll();
   }, []);
 
+  // ============================
+  // 전체 데이터 로딩
+  // ============================
   async function loadAll() {
-    const sRes = await api.get("/students");
-    const mRes = await api.get("/mentor-assignments");
+    try {
+      setLoading(true);
 
-    setStudents(sRes.data);
+      // 1. 학생 / 멘토배정 병렬 로딩
+      const [sRes, mRes] = await Promise.all([
+        api.get("/students"),
+        api.get("/mentor-assignments"),
+      ]);
 
-    const mentorMap = {};
-    mRes.data.forEach((m) => {
-      mentorMap[m.student_key] = {
-        mentor: m.mentor,
-        subjects: JSON.parse(m.subjects || "[]"),
-      };
-    });
-    setMentors(mentorMap);
+      const studentList = sRes.data || [];
+      setStudents(studentList);
 
-    // 컨설팅 데이터
-    const consultingMap = {};
-    for (const s of sRes.data) {
-      const cRes = await api.get(`/principal-consultings/${s.student_key}`);
-      consultingMap[s.student_key] = cRes.data;
+      // 2. 멘토 매핑
+      const mentorMap = {};
+      (mRes.data || []).forEach((m) => {
+        mentorMap[m.student_key] = {
+          mentor: m.mentor,
+          subjects: JSON.parse(m.subjects || "[]"),
+        };
+      });
+      setMentors(mentorMap);
+
+      // 3. 컨설팅 기록 병렬 로딩
+      const consultingEntries = await Promise.all(
+        studentList.map(async (s) => {
+          const res = await api.get(
+            `/principal-consultings/${s.student_key}`
+          );
+          return [s.student_key, res.data || []];
+        })
+      );
+
+      const consultingMap = Object.fromEntries(consultingEntries);
+      setConsultings(consultingMap);
+    } catch (err) {
+      console.error("원장 컨설팅 데이터 로딩 실패", err);
+    } finally {
+      setLoading(false);
     }
-    setConsultings(consultingMap);
   }
 
+  // ============================
+  // 컨설팅 추가
+  // ============================
   async function addConsulting(studentKey) {
-    if (!newDate[studentKey]) return;
+    const date = newDate[studentKey];
+    if (!date) return;
 
-    await api.post("/principal-consultings", {
-      student_key: studentKey,
-      consult_date: newDate[studentKey],
-    });
+    try {
+      await api.post("/principal-consultings", {
+        student_key: studentKey,
+        consult_date: date,
+      });
 
-    setNewDate({ ...newDate, [studentKey]: "" });
-    loadAll();
+      setNewDate((prev) => ({ ...prev, [studentKey]: "" }));
+      loadAll();
+    } catch (err) {
+      console.error("컨설팅 추가 실패", err);
+    }
   }
 
+  // ============================
+  // 경고 색상 계산
+  // ============================
   function getWarningColor(student) {
     if (!student.first_attendance_date) return "";
 
@@ -64,14 +99,19 @@ export default function PrincipalConsultingPage() {
       new Date().toISOString().slice(0, 10)
     );
 
-    if (days >= 7) return "#f8d7da"; // red
-    if (days >= 4) return "#fff3cd"; // orange
+    if (days >= 7) return "#f8d7da"; // 빨강
+    if (days >= 4) return "#fff3cd"; // 주황
     return "";
   }
 
+  // ============================
+  // 렌더
+  // ============================
   return (
     <div style={{ padding: 20 }}>
       <h2>원장 컨설팅 기록</h2>
+
+      {loading && <div style={{ marginBottom: 10 }}>불러오는 중...</div>}
 
       <table border="1" cellPadding="6" style={{ width: "100%" }}>
         <thead>
@@ -101,6 +141,7 @@ export default function PrincipalConsultingPage() {
                 <td>{(m.subjects || []).join(", ")}</td>
                 <td>{s.first_attendance_date || "-"}</td>
                 <td>
+                  {list.length === 0 && <div>-</div>}
                   {list.map((c) => (
                     <div key={c.id}>{c.consult_date}</div>
                   ))}
@@ -110,13 +151,16 @@ export default function PrincipalConsultingPage() {
                     type="date"
                     value={newDate[s.student_key] || ""}
                     onChange={(e) =>
-                      setNewDate({
-                        ...newDate,
+                      setNewDate((prev) => ({
+                        ...prev,
                         [s.student_key]: e.target.value,
-                      })
+                      }))
                     }
                   />
-                  <button onClick={() => addConsulting(s.student_key)}>
+                  <button
+                    style={{ marginLeft: 4 }}
+                    onClick={() => addConsulting(s.student_key)}
+                  >
                     추가
                   </button>
                 </td>

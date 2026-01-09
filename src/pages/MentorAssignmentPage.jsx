@@ -5,6 +5,7 @@ import { ScheduleContext } from "../context/ScheduleContext";
 import Select from "react-select";
 import { assignMentorsToStudents } from "../utils/mentorAssigner";
 import { timeToMinutes } from "../utils/scheduler";
+import api from "../api/api"; // ✅ 추가
 
 const koreanOptions = ["화작", "언매", "공통"].map(v => ({ label: v, value: v }));
 const mathOptions = ["미적", "확통", "기하", "공통"].map(v => ({ label: v, value: v }));
@@ -26,6 +27,38 @@ const MentorAssignmentPage = () => {
 
   const [modalContent, setModalContent] = useState(null);
 
+  // ✅ 추가: 서버(DB) 학생 → Context 주입
+  useEffect(() => {
+    const fetchStudents = async () => {
+      try {
+        const res = await api.get("/students");
+
+        const normalized = (res.data || []).map(s => ({
+          id: s.student_key,
+          name: s.name,
+          seatNumber: s.seat || "",
+          birthYear: "",
+          personality: "",
+          korean: "",
+          math: "",
+          explore1: "",
+          explore2: "",
+          fixedMentor: "",
+          bannedMentor1: "",
+          selectedMentor: "",
+        }));
+
+        setStudents(normalized);
+      } catch (e) {
+        console.error("학생 불러오기 실패", e);
+      }
+    };
+
+    if (students.length === 0) {
+      fetchStudents();
+    }
+  }, []);
+
   useEffect(() => {
     setStudents(prev =>
       prev.map(s => ({
@@ -46,22 +79,15 @@ const MentorAssignmentPage = () => {
     setAssignments(result);
   };
 
-  const showModal = (text) => {
-    setModalContent(text);
-  };
+  const showModal = (text) => setModalContent(text);
+  const closeModal = () => setModalContent(null);
 
-  const closeModal = () => {
-    setModalContent(null);
-  };
-
-  // ✅ ESC 키로 모달 닫기
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") closeModal(); };
     if (modalContent) window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [modalContent]);
 
-  // ✅ 검증 함수 (멘토링 가능 여부 + 상세 결과)
   const checkOverlap = (student) => {
     const selectedMentorName = student.selectedMentor;
     if (!selectedMentorName) {
@@ -111,13 +137,11 @@ const MentorAssignmentPage = () => {
     );
   };
 
-  // ✅ 추가: 전체 검증 (모든 학생을 검사하여 불일치 학생만 모아서 팝업)
   const checkAllOverlaps = () => {
     const fails = [];
 
     students.forEach((s) => {
       const selectedMentorName = s.selectedMentor;
-
       if (!selectedMentorName) {
         fails.push(`• ${s.name}: 선택 멘토 없음`);
         return;
