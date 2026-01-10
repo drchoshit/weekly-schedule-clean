@@ -43,19 +43,24 @@ export default function AttendancePage() {
   // 학생 추가 (서버 연동)
   // =========================
   const handleAddStudent = async () => {
-    const name = prompt("학생 이름을 입력하세요");
+    const nameRaw = prompt("학생 이름을 입력하세요");
+    const name = (nameRaw || "").trim();
     if (!name) return;
 
-    // 1. Context
-    addStudent({ name });
+    // ✅ 서버는 seat 필수 (NOT NULL). 빈 문자열 말고 기본값을 넣자.
+    const seat = "-";
+    const first_attendance_date = new Date().toISOString().slice(0, 10);
 
-    // 2. Server DB
+    // ✅ 서버 저장을 먼저 성공시키고, 그 다음 프론트에 반영 (상태 꼬임 방지)
     try {
       await api.post("/students", {
         name,
-        seat: "",
-        first_attendance_date: new Date().toISOString().slice(0, 10),
+        seat,
+        first_attendance_date,
       });
+
+      // 서버 저장 성공 후 context에 추가
+      addStudent({ name, seatNumber: seat });
     } catch (err) {
       console.error("학생 서버 저장 실패", err);
       alert("학생 서버 저장 중 오류가 발생했습니다.");
@@ -68,13 +73,10 @@ export default function AttendancePage() {
   const handleDeleteStudent = async (student) => {
     if (!window.confirm(`${student.name} 학생을 삭제할까요?`)) return;
 
+    // ✅ 현재 서버에 DELETE API가 없으므로 프론트에서만 삭제
     removeStudent(student.id);
 
-    try {
-      await api.delete(`/students/${encodeURIComponent(student.name)}`);
-    } catch (err) {
-      console.error("학생 서버 삭제 실패", err);
-    }
+    // (선택) 서버에도 반영하고 싶으면 서버에 DELETE 라우트를 추가해야 함
   };
 
   // =========================
@@ -114,11 +116,7 @@ export default function AttendancePage() {
       if (!s) continue;
 
       removeStudent(id);
-      try {
-        await api.delete(`/students/${encodeURIComponent(s.name)}`);
-      } catch (err) {
-        console.error("학생 서버 삭제 실패", err);
-      }
+      // ✅ 서버에 DELETE API 없음. 프론트에서만 삭제.
     }
 
     setSelectedIds(new Set());
@@ -239,6 +237,8 @@ export default function AttendancePage() {
         students.map(s => [s.name, s])
       );
 
+      let student; // ✅ 이 줄 추가
+
       const incomingAttendance = {};
 
       for (let i = 2; i < rows.length; i++) {
@@ -247,17 +247,23 @@ export default function AttendancePage() {
         const seat = row[1] || "";
         if (!name) continue;
 
-        let student = nameToStudent[name];
-        if (!student) {
-          addStudent({ name, seatNumber: seat });
+        student = nameToStudent[name];
 
+        if (!student) {
+          // ✅ 서버 저장 먼저
           await api.post("/students", {
             name,
-            seat,
+            seat: seat || "-",
             first_attendance_date: new Date().toISOString().slice(0, 10),
           });
 
-          student = nameToStudent[name];
+          // ✅ 프론트 추가
+          addStudent({ name, seatNumber: seat || "-" });
+
+          // ✅ nameToStudent는 고정 객체라 갱신이 안 됨.
+          // 새 student 참조는 students에서 다시 찾지 말고, 여기서 직접 만들어 사용.
+          student = { id: Date.now() + i, name, seatNumber: seat || "-" };
+          nameToStudent[name] = student;
         } else {
           updateStudent(student.id, { seatNumber: seat });
 
