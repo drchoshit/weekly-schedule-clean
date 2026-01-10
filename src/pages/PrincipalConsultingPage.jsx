@@ -36,23 +36,23 @@ export default function PrincipalConsultingPage() {
       const studentList = sRes.data || [];
       setStudents(studentList);
 
-      // 2. 멘토 매핑
+      // 2. 멘토 매핑 (student_name 기준)
       const mentorMap = {};
       (mRes.data || []).forEach((m) => {
-        mentorMap[m.student_key] = {
+        mentorMap[m.student_name] = {
           mentor: m.mentor,
           subjects: JSON.parse(m.subjects || "[]"),
         };
       });
       setMentors(mentorMap);
 
-      // 3. 컨설팅 기록 병렬 로딩
+      // 3. 컨설팅 기록 병렬 로딩 (student.name 기준)
       const consultingEntries = await Promise.all(
         studentList.map(async (s) => {
           const res = await api.get(
-            `/principal-consultings/${s.student_key}`
+            `/principal-consultings/${encodeURIComponent(s.name)}`
           );
-          return [s.student_key, res.data || []];
+          return [s.name, res.data || []];
         })
       );
 
@@ -68,17 +68,17 @@ export default function PrincipalConsultingPage() {
   // ============================
   // 컨설팅 추가
   // ============================
-  async function addConsulting(studentKey) {
-    const date = newDate[studentKey];
+  async function addConsulting(studentName) {
+    const date = newDate[studentName];
     if (!date) return;
 
     try {
       await api.post("/principal-consultings", {
-        student_key: studentKey,
+        student_name: studentName,
         consult_date: date,
       });
 
-      setNewDate((prev) => ({ ...prev, [studentKey]: "" }));
+      setNewDate((prev) => ({ ...prev, [studentName]: "" }));
       loadAll();
     } catch (err) {
       console.error("컨설팅 추가 실패", err);
@@ -91,7 +91,7 @@ export default function PrincipalConsultingPage() {
   function getWarningColor(student) {
     if (!student.first_attendance_date) return "";
 
-    const list = consultings[student.student_key] || [];
+    const list = consultings[student.name] || [];
     if (list.length > 0) return "";
 
     const days = daysBetween(
@@ -127,12 +127,12 @@ export default function PrincipalConsultingPage() {
         </thead>
         <tbody>
           {students.map((s) => {
-            const m = mentors[s.student_key] || {};
-            const list = consultings[s.student_key] || [];
+            const m = mentors[s.name] || {};
+            const list = consultings[s.name] || [];
 
             return (
               <tr
-                key={s.student_key}
+                key={s.name}
                 style={{ background: getWarningColor(s) }}
               >
                 <td>{s.name}</td>
@@ -149,17 +149,17 @@ export default function PrincipalConsultingPage() {
                 <td>
                   <input
                     type="date"
-                    value={newDate[s.student_key] || ""}
+                    value={newDate[s.name] || ""}
                     onChange={(e) =>
                       setNewDate((prev) => ({
                         ...prev,
-                        [s.student_key]: e.target.value,
+                        [s.name]: e.target.value,
                       }))
                     }
                   />
                   <button
                     style={{ marginLeft: 4 }}
-                    onClick={() => addConsulting(s.student_key)}
+                    onClick={() => addConsulting(s.name)}
                   >
                     추가
                   </button>
