@@ -37,10 +37,11 @@ app.get("/api/students", (req, res) => {
     FROM students
     ORDER BY name ASC
   `).all();
+
   res.json(rows);
 });
 
-// 학생 저장 / 업데이트
+// 학생 저장 / 업데이트  ✅ 핵심 수정 지점
 app.post("/api/students", (req, res) => {
   const { name, seat, first_attendance_date } = req.body;
 
@@ -48,13 +49,16 @@ app.post("/api/students", (req, res) => {
     return res.status(400).json({ error: "name, seat 필수" });
   }
 
+  // ❗ 기존 ON CONFLICT 제거
+  // ❗ INSERT OR REPLACE 사용 (SQLite + Render 안정 조합)
   db.prepare(`
-    INSERT INTO students (name, seat, first_attendance_date)
+    INSERT OR REPLACE INTO students (name, seat, first_attendance_date)
     VALUES (?, ?, ?)
-    ON CONFLICT(name) DO UPDATE SET
-      seat = excluded.seat,
-      first_attendance_date = excluded.first_attendance_date
-  `).run(name, seat, first_attendance_date || null);
+  `).run(
+    name,
+    seat,
+    first_attendance_date || null
+  );
 
   res.json({ ok: true });
 });
@@ -69,6 +73,7 @@ app.get("/api/mentor-assignments", (req, res) => {
     SELECT student_name, mentor, subjects
     FROM mentor_assignments
   `).all();
+
   res.json(rows);
 });
 
@@ -80,6 +85,7 @@ app.post("/api/mentor-assignments", (req, res) => {
     return res.status(400).json({ error: "student_name 필수" });
   }
 
+  // mentor_assignments는 PK가 student_name이라 ON CONFLICT 정상 동작
   db.prepare(`
     INSERT INTO mentor_assignments (student_name, mentor, subjects)
     VALUES (?, ?, ?)
